@@ -1678,9 +1678,16 @@ class AIAgent:
                     tool_calls_data = [
                         {"name": tc.function.name, "arguments": tc.function.arguments}
                         for tc in msg.tool_calls
+                        if tc.function.name
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
+                    tool_calls_data = [
+                        tc for tc in msg["tool_calls"]
+                        if isinstance(tc, dict)
+                        and (tc.get("name") or (tc.get("function") or {}).get("name"))
+                    ]
+                if tool_calls_data is not None and not tool_calls_data:
+                    tool_calls_data = None
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
