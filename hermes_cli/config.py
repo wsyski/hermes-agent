@@ -3999,6 +3999,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Added portal.app_tools = True")
 
+        # Inject app_tools into any saved platform_toolsets lists so existing
+        # users who ran `hermes tools` get the new toolset automatically.
+        config = read_raw_config()
+        pt = config.get("platform_toolsets")
+        if isinstance(pt, dict):
+            patched = False
+            for plat_key, ts_list in pt.items():
+                if isinstance(ts_list, list) and "app_tools" not in ts_list:
+                    ts_list.append("app_tools")
+                    patched = True
+            if patched:
+                save_config(config)
+                results["config_added"].append("app_tools added to platform_toolsets")
+                if not quiet:
+                    print("  ✓ Added app_tools to saved platform toolset lists")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
