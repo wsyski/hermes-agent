@@ -9627,6 +9627,12 @@ class GatewayRunner:
             # gateway restarts (#41128).  Read the terminal environment's live
             # cwd (which reflects cd commands executed during the turn) rather
             # than the static ContextVar set at turn start.
+            #
+            # _active_environments is keyed by the terminal task_id (see
+            # tools/terminal_tool.py), which for gateway turns is usually the
+            # agent's task_id rather than the gateway session_id.  Try both:
+            # session_id first (covers backends that key on it), then the
+            # task_id returned in the agent result.
             try:
                 from tools.terminal_tool import _active_environments
 
@@ -9641,7 +9647,14 @@ class GatewayRunner:
                         session_entry.cwd = _live_cwd
                         self.session_store._save()
             except Exception:
-                pass
+                # Best-effort; never let cwd persistence break the turn.
+                # Log at debug so a lookup-key regression is diagnosable
+                # instead of failing silently.
+                logger.debug(
+                    "Failed to persist session cwd for %s",
+                    getattr(session_entry, "session_id", "?"),
+                    exc_info=True,
+                )
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
