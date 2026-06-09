@@ -86,7 +86,9 @@ export function ToolPart(props: { part: ToolPartState }) {
   const body = createMemo(() => collapseToolOutput(result(), EXPANDED_MAX, bodyWidth() - 2))
 
   const headGlyph = () => (collapsible() ? (expanded() ? '▼' : '▶') : '⚡')
-  const headColor = () => (props.part.error ? theme().color.error : theme().color.muted)
+  // accent glyph MARKS the tool (draws the eye); the rest is muted so tools read
+  // as the dim, secondary tier below the bright assistant answer (Ink hierarchy).
+  const headColor = () => (props.part.error ? theme().color.error : theme().color.accent)
   const subWidth = () => Math.max(1, bodyWidth() - props.part.name.length - 2)
 
   return (
@@ -102,7 +104,7 @@ export function ToolPart(props: { part: ToolPartState }) {
         </box>
         <box style={{ flexDirection: 'row', flexGrow: 1, minWidth: 0 }}>
           <text>
-            <span style={{ fg: theme().color.label }}>{props.part.name}</span>
+            <span style={{ fg: theme().color.muted }}>{props.part.name}</span>
             <Show when={running()}>
               <span style={{ fg: theme().color.muted }}> …</span>
             </Show>

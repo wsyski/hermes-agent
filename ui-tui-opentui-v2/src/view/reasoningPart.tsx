@@ -47,13 +47,13 @@ export function ReasoningPart(props: { text: string; streaming?: boolean }) {
         >
           <box style={{ flexShrink: 0, width: GUTTER }}>
             <text selectable={false}>
-              <span style={{ fg: theme().color.muted }}>{expanded() ? '▼' : '▶'}</span>
+              <span style={{ fg: theme().color.accent }}>{expanded() ? '▼' : '▶'}</span>
             </text>
           </box>
           <text>
-            {/* label color matches tool headers (label, not warn) so reasoning + tool
-                read as one family of collapsible asides — warn is for warnings (item 8). */}
-            <span style={{ fg: theme().color.label }}>{label()}</span>
+            {/* accent chevron marks it; muted label keeps reasoning in the dim,
+                secondary tier alongside tool calls (Ink hierarchy). */}
+            <span style={{ fg: theme().color.muted }}>{label()}</span>
             <Show when={summary().title}>
               <span style={{ fg: theme().color.muted }}>{`: ${summary().title}`}</span>
             </Show>

@@ -22,12 +22,18 @@ export function MessageLine(props: { message: Message }) {
   const theme = useTheme()
   const m = () => props.message
   const glyph = () => (m().role === 'assistant' ? theme().brand.icon : m().role === 'user' ? theme().brand.prompt : '·')
+  // Role-distinct color IS the hierarchy (Ink model): the human's turn is tinted
+  // GOLD (label), the agent's answer is BRIGHT (text), system notes are DIM (muted).
   const glyphFg = () =>
-    m().role === 'assistant' ? theme().color.accent : m().role === 'user' ? theme().color.accent : theme().color.muted
+    m().role === 'user' ? theme().color.label : m().role === 'assistant' ? theme().color.accent : theme().color.muted
+  const bodyFg = () =>
+    m().role === 'user' ? theme().color.label : m().role === 'system' ? theme().color.muted : theme().color.text
   const hasParts = () => (m().parts?.length ?? 0) > 0
 
   return (
-    <box style={{ flexDirection: 'row', flexShrink: 0, marginTop: m().role === 'user' ? 1 : 0 }}>
+    // One blank line above every turn so user / assistant / tool blocks read as
+    // distinct turns (item: spacing). The gold-vs-bright color split does the rest.
+    <box style={{ flexDirection: 'row', flexShrink: 0, marginTop: 1 }}>
       <box style={{ flexShrink: 0, width: GUTTER }}>
         {/* the role glyph is decorative — exclude it from mouse selection (item 4).
             Bold so the user `❯` / assistant `⚕` turn boundaries pop (item 8). */}
@@ -51,7 +57,7 @@ export function MessageLine(props: { message: Message }) {
               when={m().streaming && !hasParts()}
               fallback={
                 <text>
-                  <span style={{ fg: theme().color.text }}>{m().text}</span>
+                  <span style={{ fg: bodyFg() }}>{m().text}</span>
                 </text>
               }
             >

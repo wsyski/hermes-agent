@@ -25,7 +25,7 @@ import { ScrollAnchorProvider } from './scrollAnchor.tsx'
 export function Transcript(props: { store: SessionStore }) {
   const [scroll, setScroll] = createSignal<ScrollBoxRenderable | undefined>()
   return (
-    <box style={{ flexGrow: 1, minHeight: 0, marginTop: 1 }}>
+    <box style={{ flexGrow: 1, minHeight: 0 }}>
       <scrollbox ref={setScroll} style={{ flexGrow: 1, minHeight: 0 }} stickyScroll stickyStart="bottom">
         <ScrollAnchorProvider scroll={scroll}>
           {/* empty-transcript home screen (item 12); replaced by messages on the first turn */}
