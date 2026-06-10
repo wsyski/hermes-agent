@@ -336,6 +336,30 @@ export function pickerTabs(items: readonly PickerItem[]): string[] {
   return activePickerTabs?.(items) ?? []
 }
 
+/**
+ * The bootstrap `model.options` prefetch seam (perf: prefetch dedupe). The
+ * entry stashes its in-flight prefetch promise here; a bare `/model` that
+ * finds the cache empty AWAITS it (bounded by `waitMs`) and re-checks the
+ * cache instead of issuing a second concurrent `model.options` RPC. A hung
+ * prefetch only delays the picker by the bound — `/model` then opens via its
+ * own fetch as before.
+ */
+let modelPrefetch: { promise: Promise<unknown>; waitMs: number } | undefined
+
+/** Register (or clear, with `undefined`) the in-flight bootstrap prefetch. */
+export function registerModelPrefetch(promise: Promise<unknown> | undefined, waitMs = 2000): void {
+  modelPrefetch = promise ? { promise, waitMs } : undefined
+}
+
+/** Await the registered prefetch (bounded); resolves immediately when none. */
+function awaitModelPrefetch(): Promise<void> {
+  const pending = modelPrefetch
+  if (!pending) return Promise.resolve()
+  return Promise.race([pending.promise, new Promise(resolve => setTimeout(resolve, pending.waitMs))]).then(
+    () => undefined
+  )
+}
+
 /** Switch the model via the server (shared by `/model <name>` and the picker pick).
  *  A successful switch refreshes the cached rows in the background (fresh ✓). */
 async function switchModel(ctx: SlashContext, name: string): Promise<void> {
@@ -350,7 +374,9 @@ async function switchModel(ctx: SlashContext, name: string): Promise<void> {
 
 /** `/model` — bare opens the model picker; `/model <name>` switches directly.
  *  Opens from the CACHED catalog when present — zero RPCs, same-frame paint
- *  (Epic 7; the catalog is prefetched at bootstrap and refreshed on switch). */
+ *  (Epic 7; the catalog is prefetched at bootstrap and refreshed on switch).
+ *  An empty cache first awaits the in-flight bootstrap prefetch (bounded) so
+ *  an early `/model` never doubles the slow `model.options` RPC. */
 const modelCmd: ClientHandler = async (arg, ctx) => {
   if (arg.trim()) {
     await switchModel(ctx, arg.trim())
@@ -366,6 +392,14 @@ const modelCmd: ClientHandler = async (arg, ctx) => {
   const cached = ctx.modelItems()
   if (cached?.length) {
     open(cached)
+    return
+  }
+  // Cache empty but the bootstrap prefetch may be in flight — await it
+  // (bounded) and re-check instead of racing a SECOND model.options RPC.
+  await awaitModelPrefetch()
+  const prefetched = ctx.modelItems()
+  if (prefetched?.length) {
+    open(prefetched)
     return
   }
   const items = mapModelOptions(await ctx.request('model.options', { session_id: ctx.sessionId() }))

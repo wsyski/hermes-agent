@@ -42,6 +42,7 @@ import {
   mapModelOptions,
   planCompletion,
   readReplaceFrom,
+  registerModelPrefetch,
   type SlashContext
 } from '../logic/slash.ts'
 import { createSessionStore, type SessionStore } from '../logic/store.ts'
@@ -196,11 +197,19 @@ const bootstrapSession = (gateway: GatewayServiceShape, store: SessionStore, inp
     // that cost ONCE here in this already-forked bootstrap fiber; `/model` then
     // paints from memory on the same frame. Best-effort: if this hasn't landed
     // (or the RPC is missing/old), /model falls back to fetching on first open.
-    const modelOpts = yield* gateway
-      .request<unknown>('model.options', { session_id: sid })
-      .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
-    const modelItems = mapModelOptions(modelOpts)
-    if (modelItems.length) store.setModelItems(modelItems)
+    // The promise is STASHED in the slash seam so a `/model` opened while the
+    // prefetch is still in flight awaits THIS request (bounded) instead of
+    // issuing a second concurrent model.options RPC (prefetch dedupe).
+    const prefetch = Effect.runPromise(
+      gateway
+        .request<unknown>('model.options', { session_id: sid })
+        .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    ).then(modelOpts => {
+      const modelItems = mapModelOptions(modelOpts)
+      if (modelItems.length) store.setModelItems(modelItems)
+    })
+    registerModelPrefetch(prefetch)
+    yield* Effect.promise(() => prefetch)
   }).pipe(Effect.catchCause(cause => Effect.sync(() => getLog().warn('bootstrap', 'failed', { cause: String(cause) }))))
 
 /** The entry Effect. Mirrors opencode `app.tsx:177` `run = Effect.fn("Tui.run")`. */

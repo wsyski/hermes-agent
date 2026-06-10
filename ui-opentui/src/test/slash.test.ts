@@ -13,6 +13,7 @@ import {
   pickerTabs,
   planCompletion,
   readReplaceFrom,
+  registerModelPrefetch,
   registerPickerRefresh,
   registerPickerTabs,
   runPickerRefresh,
@@ -22,10 +23,11 @@ import type { PickerItem, SessionItem } from '../logic/store.ts'
 
 const FAKE_SESSIONS: SessionItem[] = [{ id: 's1', messageCount: 5, preview: 'hello there', title: 'First chat' }]
 
-// the picker-refresh/tabs seams are module-level state — never leak them across tests
+// the picker-refresh/tabs/prefetch seams are module-level state — never leak them across tests
 afterEach(() => {
   registerPickerRefresh(undefined)
   registerPickerTabs(undefined)
+  registerModelPrefetch(undefined)
 })
 
 /** A `model.options` payload: two authed providers + two unconfigured skeleton
@@ -397,6 +399,39 @@ describe('dispatchSlash — client commands', () => {
     const p2 = makeCtx(async () => ({ skills: { General: ['memory'] } }))
     await dispatchSlash('/skills', p2.ctx)
     expect(pickerTabs(p.pickers[0]!.items)).toEqual([])
+  })
+
+  test('/model during an in-flight bootstrap prefetch performs ZERO additional model.options RPCs', async () => {
+    const p = makeCtx(async () => {
+      throw new Error('no RPC expected — the prefetch owns model.options')
+    })
+    // a slow prefetch (entry/main.tsx shape): resolving it fills the cache
+    let finish: () => void = () => {}
+    registerModelPrefetch(
+      new Promise<void>(resolve => {
+        finish = () => {
+          p.modelCache.value = [
+            { group: 'Anthropic', haystacks: ['anthropic'], label: 'claude-sonnet-4.6', value: 'a' }
+          ]
+          resolve()
+        }
+      }),
+      5000
+    )
+    const dispatched = dispatchSlash('/model', p.ctx)
+    finish() // prefetch lands while /model awaits it
+    await dispatched
+    expect(p.pickers).toHaveLength(1) // opened from the prefetched cache
+    expect(p.pickers[0]!.items).toHaveLength(1)
+    expect(p.calls).toHaveLength(0) // the dedupe: no second model.options
+  })
+
+  test('/model with a HUNG prefetch still opens via its own fetch after the bound', async () => {
+    const p = makeCtx(async method => (method === 'model.options' ? MODEL_OPTIONS : { output: 'switched' }))
+    registerModelPrefetch(new Promise(() => {}), 10) // never settles; tiny test bound
+    await dispatchSlash('/model', p.ctx)
+    expect(p.pickers).toHaveLength(1) // fell back to fetching itself
+    expect(p.calls.filter(c => c.method === 'model.options')).toHaveLength(1)
   })
 
   test('/model <name> switches directly without opening the picker', async () => {
