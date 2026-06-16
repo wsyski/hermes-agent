@@ -48,7 +48,7 @@ def test_cross_origin_mutation_blocked(loopback_client, sfs):
     r = loopback_client.post(
         _MUTATING_ROUTE,
         headers={
-            "X-Hermes-Session-Token": web_server._SESSION_TOKEN,
+            "X-Hermes-Session-Token": "stale-token-ignored",
             "Sec-Fetch-Site": sfs,
         },
         json={"key": "OPENAI_API_KEY", "value": "x"},
@@ -62,7 +62,7 @@ def test_same_origin_mutation_allowed(loopback_client, sfs):
     r = loopback_client.post(
         _MUTATING_ROUTE,
         headers={
-            "X-Hermes-Session-Token": web_server._SESSION_TOKEN,
+            "X-Hermes-Session-Token": "stale-token-ignored",
             "Sec-Fetch-Site": sfs,
         },
         json={"key": "OPENAI_API_KEY", "value": "x"},
@@ -76,7 +76,7 @@ def test_absent_header_fails_open(loopback_client):
     Sec-Fetch-Site and must NOT be blocked."""
     r = loopback_client.post(
         _MUTATING_ROUTE,
-        headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN},
+        headers={"X-Hermes-Session-Token": "stale-token-ignored"},
         json={"key": "OPENAI_API_KEY", "value": "x"},
     )
     assert r.status_code != 403

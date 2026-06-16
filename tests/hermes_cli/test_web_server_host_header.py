@@ -161,7 +161,7 @@ class TestWebSocketHostOriginGuard:
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
         client = TestClient(ws.app)
-        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        url = "/api/events?channel=security-test"
         with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(
                 url,
@@ -184,7 +184,7 @@ class TestWebSocketHostOriginGuard:
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
         client = TestClient(ws.app)
-        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        url = "/api/events?channel=security-test"
         with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(
                 url,
@@ -206,7 +206,7 @@ class TestWebSocketHostOriginGuard:
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
         client = TestClient(ws.app)
-        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        url = "/api/events?channel=security-test"
         with client.websocket_connect(
             url,
             headers={

@@ -61,11 +61,10 @@ def client(monkeypatch, isolated_profiles):
 
     import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_cli.web_server import app
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
-    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c
 
 
@@ -215,9 +214,7 @@ class TestEditorEndpointsAuth:
         gated (non-loopback) path is where identity is enforced, covered by
         the dashboard-auth gate tests.
         """
-        from hermes_cli.web_server import _SESSION_HEADER_NAME
-
-        client.headers.pop(_SESSION_HEADER_NAME, None)
+        client.headers.pop("X-Hermes-Session-Token", None)
         resp = getattr(client, method)(path, **kwargs)
         assert resp.status_code != 401
 

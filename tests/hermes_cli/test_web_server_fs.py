@@ -19,7 +19,7 @@ def client(monkeypatch):
     previous_auth_required = getattr(web_server.app.state, "auth_required", None)
     web_server.app.state.auth_required = False
     test_client = TestClient(web_server.app)
-    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    # Loopback bind has no identity gate; no session header needed.
     try:
         yield test_client
     finally:

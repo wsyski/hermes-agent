@@ -85,7 +85,7 @@ def test_gated_ignores_legacy_token_header(gated_client):
     a *valid* ``X-Hermes-Session-Token`` and no cookie must still 401."""
     r = gated_client.get(
         "/api/sessions",
-        headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN},
+        headers={"X-Hermes-Session-Token": "stale-token-ignored"},
     )
     assert r.status_code == 401
     assert r.json().get("error") in ("unauthenticated", "session_expired")
@@ -171,7 +171,7 @@ def test_ws_gated_rejects_legacy_token():
     web_server.app.state.auth_required = True
     try:
         reason, cred = web_server._ws_auth_reason(
-            _fake_ws({"token": web_server._SESSION_TOKEN})
+            _fake_ws({"token": "stale-token-ignored"})
         )
         assert reason == "no_credential"  # token ignored; no ticket present
     finally:

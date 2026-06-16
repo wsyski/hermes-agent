@@ -261,7 +261,7 @@ class TestWsAuthOkGated:
         """Critical: gated mode must NOT honour the legacy token path
         even when someone has access to the in-process value of
         _SESSION_TOKEN (e.g. a leaked log line)."""
-        ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
+        ws = _fake_ws(query={"token": "stale-token-ignored"})
         assert web_server._ws_auth_ok(ws) is False
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
@@ -502,11 +502,16 @@ class TestWsHostOriginGuardOrigins:
 
 
 class TestSidecarUrl:
-    def test_loopback_uses_session_token(self, loopback_app):
+    def test_loopback_has_no_credential(self, loopback_app):
+        # Loopback child connects from localhost; the peer-IP + Host/Origin
+        # guard is the gate, so the sidecar URL carries no credential — just
+        # the channel. (The legacy ?token= is gone.)
         url = web_server._build_sidecar_url("ch-1")
         assert url is not None
-        assert f"token={web_server._SESSION_TOKEN}" in url
+        assert "token=" not in url
         assert "ticket=" not in url
+        assert "internal=" not in url
+        assert "channel=ch-1" in url
 
     def test_gated_uses_internal_credential(self, gated_app):
         url = web_server._build_sidecar_url("ch-1")
@@ -539,11 +544,13 @@ class TestSidecarUrl:
 
 
 class TestGatewayWsUrl:
-    def test_loopback_uses_session_token(self, loopback_app):
+    def test_loopback_has_no_credential(self, loopback_app):
+        # Loopback: bare /api/ws with no credential (peer-IP + Host/Origin
+        # guard is the gate; the legacy ?token= is gone).
         url = web_server._build_gateway_ws_url()
         assert url is not None
-        assert "/api/ws?" in url
-        assert f"token={web_server._SESSION_TOKEN}" in url
+        assert url.endswith("/api/ws")
+        assert "token=" not in url
         assert "internal=" not in url
 
     def test_gated_uses_internal_credential(self, gated_app):

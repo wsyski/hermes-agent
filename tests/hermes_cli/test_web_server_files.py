@@ -7,6 +7,10 @@ from starlette.testclient import TestClient
 
 from hermes_cli import web_server
 
+# These tests mutate web_server.app.state (auth_required / bound_host); share
+# the dashboard-auth xdist group so they don't race other app.state mutators.
+pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
+
 
 def _client_with_app_state():
     prev_auth_required = getattr(web_server.app.state, "auth_required", None)
@@ -15,7 +19,7 @@ def _client_with_app_state():
     web_server.app.state.bound_host = None
 
     client = TestClient(web_server.app)
-    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    # Loopback bind has no identity gate; no session header needed.
     return client, prev_auth_required, prev_bound_host
 
 
@@ -276,42 +280,56 @@ def test_download_returns_file_as_attachment(forced_files_client):
     assert "hello.txt" in disposition
 
 
-def test_download_authenticates_via_query_token(forced_files_client):
+def test_download_no_identity_gate_on_loopback(forced_files_client):
+    """Loopback download needs no credential after the legacy-token teardown.
+
+    The browser/shell-opened download (which can't set a session header) just
+    works on a loopback bind — the bind is the security boundary. The old
+    ``?token=`` query-param escape hatch is gone with the token. Gated-mode
+    enforcement is pinned by test_download_requires_auth_in_gated_mode below.
+    """
     client, root = forced_files_client
     file_path = _seed_file(client, root)
 
-    # Drop the session header so only the ?token= query param authenticates —
-    # mirrors a browser/shell-opened download that can't set the session header.
-    del client.headers[web_server._SESSION_HEADER_NAME]
-
-    ok = client.get(
-        "/api/files/download",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
-    )
+    ok = client.get("/api/files/download", params={"path": str(file_path)})
     assert ok.status_code == 200
     assert ok.content == b"hello"
 
-    assert client.get(
-        "/api/files/download", params={"path": str(file_path), "token": "nope"}
-    ).status_code == 401
-    assert client.get(
-        "/api/files/download", params={"path": str(file_path)}
-    ).status_code == 401
+    # A stale/garbage ?token= is simply ignored, not rejected, on loopback.
+    still_ok = client.get(
+        "/api/files/download", params={"path": str(file_path), "token": "anything"}
+    )
+    assert still_ok.status_code == 200
 
 
-def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
+def test_download_requires_auth_in_gated_mode(forced_files_client, monkeypatch):
+    """In gated (non-loopback) mode the download endpoint requires a verified
+    session cookie — a cookieless request 401s at the gate, and there is no
+    ``?token=`` query-param bypass."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
     client, root = forced_files_client
     file_path = _seed_file(client, root)
 
-    del client.headers[web_server._SESSION_HEADER_NAME]
-
-    # The query-token escape hatch is scoped to /api/files/download only; it must
-    # not unlock the rest of the API surface.
-    leaked = client.get(
-        "/api/files/read",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
-    )
-    assert leaked.status_code == 401
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    clear_providers()
+    register_provider(StubAuthProvider())
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.auth_required = True
+    try:
+        gated = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+        # Cookieless → 401 at the gate, with or without a bogus ?token=.
+        assert gated.get(
+            "/api/files/download", params={"path": str(file_path)}
+        ).status_code == 401
+        assert gated.get(
+            "/api/files/download", params={"path": str(file_path), "token": "anything"}
+        ).status_code == 401
+    finally:
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.auth_required = False
 
 
 def test_hosted_policy_locks_to_opt_data(monkeypatch):

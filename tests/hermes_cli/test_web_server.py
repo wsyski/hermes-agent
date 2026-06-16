@@ -184,35 +184,6 @@ class TestRedactKey:
         assert "not set" in result.lower() or result == "***" or "\x1b" in result
 
 
-class TestSessionTokenInjection:
-    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
-    /api + /api/ws calls with it. The backend must adopt that token, else every
-    desktop request 401s ("gateway is offline"). A main-merge once silently
-    dropped this read — this guards the contract, not a literal value.
-    """
-
-    def test_honors_injected_token(self, monkeypatch):
-        import importlib
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        try:
-            importlib.reload(ws)
-            assert ws._SESSION_TOKEN == "desktop-seeded-token"
-        finally:
-            monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-            importlib.reload(ws)
-
-    def test_falls_back_to_random_token(self, monkeypatch):
-        import importlib
-        import hermes_cli.web_server as ws
-
-        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        importlib.reload(ws)
-
-        assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
-
-
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------
@@ -231,12 +202,12 @@ class TestWebServerEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_get_status(self):
         resp = self.client.get("/api/status")
@@ -315,12 +286,10 @@ class TestWebServerEndpoints:
         outside the media roots, so the handler returns 403 — the point is it's
         no longer 401. Identity is enforced only in gated mode.
         """
-        from hermes_cli.web_server import _SESSION_HEADER_NAME
-
         resp = self.client.get(
             "/api/media",
             params={"path": "/tmp/x.png"},
-            headers={_SESSION_HEADER_NAME: "wrong-token"},
+            headers={"X-Hermes-Session-Token": "wrong-token"},
         )
         assert resp.status_code != 401
         assert resp.status_code == 403
@@ -1368,12 +1337,10 @@ class TestWebServerEndpoints:
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
         save_env_value("TEST_REVEAL_KEY", "super-secret-value-12345")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_KEY"},
-            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -1382,11 +1349,9 @@ class TestWebServerEndpoints:
 
     def test_reveal_env_var_not_found(self):
         """POST /api/env/reveal should 404 for unknown keys."""
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "NONEXISTENT_KEY_XYZ"},
-            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         )
         assert resp.status_code == 404
 
@@ -1459,28 +1424,28 @@ class TestWebServerEndpoints:
         of 401ing. Identity is enforced only in gated mode.
         """
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME
         save_env_value("TEST_REVEAL_BADAUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_BADAUTH"},
-            headers={_SESSION_HEADER_NAME: "wrong-token-here"},
+            headers={"X-Hermes-Session-Token": "wrong-token-here"},
         )
         assert resp.status_code != 401
         assert resp.status_code == 200
         assert resp.json()["value"] == "secret-value"
 
     def test_reveal_env_var_custom_session_header_ignores_proxy_authorization(self, tmp_path):
-        """A valid dashboard session header should coexist with proxy auth."""
+        """A stale dashboard session header should be ignored, not break the
+        request: on loopback there's no identity gate, and a proxy
+        ``Authorization`` header must not interfere with the reveal."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         save_env_value("TEST_REVEAL_PROXY_AUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_PROXY_AUTH"},
             headers={
-                _SESSION_HEADER_NAME: _SESSION_TOKEN,
+                "X-Hermes-Session-Token": "stale-token-ignored",
                 "Authorization": "Basic dXNlcjpwYXNz",
             },
         )
@@ -1497,13 +1462,12 @@ class TestWebServerEndpoints:
         that token mechanism is slated for deletion.)
         """
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_TOKEN
 
         save_env_value("TEST_REVEAL_LEGACY_AUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_LEGACY_AUTH"},
-            headers={"Authorization": f"Bearer {_SESSION_TOKEN}"},
+            headers={"Authorization": "Bearer stale-token-ignored"},
         )
 
         assert resp.status_code != 401
@@ -2547,9 +2511,9 @@ class TestConfigRoundTrip:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_get_config_no_internal_keys(self):
         """GET /api/config should not expose _config_version or _model_meta."""
@@ -2683,12 +2647,12 @@ class TestNewEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
@@ -4025,9 +3989,9 @@ class TestStatusRemoteGateway:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_status_falls_back_to_remote_probe(self, monkeypatch):
         """When local PID check fails and remote probe succeeds, gateway shows running."""
@@ -4445,7 +4409,7 @@ class TestBulkDeleteSessionsEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -4453,7 +4417,7 @@ class TestBulkDeleteSessionsEndpoint:
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def _seed(self, ids):
         from hermes_state import SessionDB
@@ -4578,7 +4542,7 @@ class TestDeleteEmptySessionsEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         # Pin the SessionDB to the isolated HERMES_HOME so each test
         # starts with a clean state.db.
@@ -4588,7 +4552,7 @@ class TestDeleteEmptySessionsEndpoint:
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def _seed(self):
         """Build the standard test corpus:
@@ -4736,13 +4700,13 @@ class TestPluginAPIAuth:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_plugin_route_no_identity_gate_on_loopback(self):
         """Plugin API GET routes serve on loopback without a session token."""
@@ -4996,7 +4960,9 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
-        self.token = ws._SESSION_TOKEN
+        # Loopback ignores any ?token= on the WS upgrade (no identity gate);
+        # a literal keeps _url() working for the connect tests below.
+        self.token = "ignored"
         self.client = TestClient(ws.app)
 
     def _url(self, token: str | None = None, **params: str) -> str:
@@ -5284,7 +5250,9 @@ class TestPtyWebSocket:
         url = captured.get("sidecar_url") or ""
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
-        assert "token=" in url
+        # Loopback sidecar URL carries no credential — the bind + peer-IP guard
+        # are the boundary (the legacy ?token= is gone).
+        assert "token=" not in url
 
     def test_pub_broadcasts_to_events_subscribers(self):
         """A frame handed to _broadcast_event is sent verbatim to every
@@ -5370,8 +5338,10 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
 
     assert env is not None
     gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
-    assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
-    assert "token=" in gateway_url
+    # Loopback gateway URL is a bare /api/ws with no credential (the legacy
+    # ?token= is gone; the loopback bind + peer-IP guard are the boundary).
+    assert gateway_url == "ws://127.0.0.1:9119/api/ws"
+    assert "token=" not in gateway_url
 
 
 class TestDashboardPluginStaticAssetAllowlist:
@@ -5497,10 +5467,10 @@ class TestValidateProviderCredential:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def _post(self, key, value):
         return self.client.post("/api/providers/validate", json={"key": key, "value": value})

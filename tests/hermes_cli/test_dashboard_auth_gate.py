@@ -52,31 +52,6 @@ def test_loopback_protected_route_no_identity_gate(client_loopback):
     assert r.status_code != 401
 
 
-def test_loopback_protected_route_accepts_session_token(client_loopback):
-    """The injected SPA token unlocks protected /api/ routes."""
-    r = client_loopback.get(
-        "/api/sessions",
-        headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN},
-    )
-    # 200 or 404 (no sessions yet) both prove the auth layer let it through.
-    # 500 is also acceptable if there's a downstream issue unrelated to auth.
-    assert r.status_code != 401, (
-        f"Expected auth to succeed but got 401; body: {r.text}"
-    )
-
-
-def test_loopback_index_injects_session_token(client_loopback):
-    """Loopback mode keeps injecting the SPA token into index.html.
-
-    This is the property that the new auth gate MUST disable once a gated
-    bind is detected. Phase 3 will add an inverse test for the gated path.
-    """
-    r = client_loopback.get("/")
-    if r.status_code == 404:
-        pytest.skip("WEB_DIST not built in this env")
-    assert "__HERMES_SESSION_TOKEN__" in r.text
-
-
 def test_loopback_host_header_validation_still_enforced(client_loopback):
     """DNS-rebinding protection: a foreign Host header is rejected."""
     r = client_loopback.get("/api/status", headers={"Host": "evil.test"})

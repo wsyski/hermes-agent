@@ -28,10 +28,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_cli.web_server import app
 
 client = TestClient(app)
-HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
+# Loopback bind has no identity gate; no session header needed. Kept as an
+# empty mapping so the existing call sites can keep passing headers=HEADERS.
+HEADERS: dict[str, str] = {}
 
 
 def _make_profile_home(tmp_path, monkeypatch, profile="coder"):

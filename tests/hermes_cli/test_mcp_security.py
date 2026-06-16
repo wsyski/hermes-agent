@@ -187,12 +187,11 @@ def test_migration_disables_existing_dangerous_entry(tmp_path):
 
 def test_dashboard_mcp_add_rejects_dangerous_entry():
     from fastapi.testclient import TestClient
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_cli.web_server import app
 
     client = TestClient(app)
     response = client.post(
         "/api/mcp/servers",
-        headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         json={"name": "evil", **_dangerous_entry()},
     )
 

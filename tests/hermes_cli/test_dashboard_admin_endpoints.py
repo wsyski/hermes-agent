@@ -17,14 +17,16 @@ def _client():
         pytest.skip("fastapi/starlette not installed")
     import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_cli.web_server import app
 
     client = TestClient(app)
-    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    # Loopback bind has no identity gate; no session header needed. A literal
+    # header name is returned so the "bogus token is ignored" tests can still
+    # send an arbitrary header under it.
     # Keep the state DB under the isolated HERMES_HOME for any handler that
     # touches it.
     hermes_state.DEFAULT_DB_PATH = get_hermes_home() / "state.db"
-    return client, _SESSION_HEADER_NAME
+    return client, "X-Hermes-Session-Token"
 
 
 class TestMcpEndpoints:
