@@ -22,6 +22,7 @@ const {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  modeIsRemoteLike,
   normAuthMode,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
@@ -45,6 +46,19 @@ test('normAuthMode coerces to token unless explicitly oauth', () => {
   assert.equal(normAuthMode('token'), 'token')
   assert.equal(normAuthMode(undefined), 'token')
   assert.equal(normAuthMode('weird'), 'token')
+})
+
+// --- modeIsRemoteLike ---
+
+test('modeIsRemoteLike is true for remote and cloud, false otherwise', () => {
+  // cloud resolves to a remote backend under the hood (Q6), so every resolution
+  // site treats it like remote.
+  assert.equal(modeIsRemoteLike('remote'), true)
+  assert.equal(modeIsRemoteLike('cloud'), true)
+  assert.equal(modeIsRemoteLike('local'), false)
+  assert.equal(modeIsRemoteLike(undefined), false)
+  assert.equal(modeIsRemoteLike(null), false)
+  assert.equal(modeIsRemoteLike('weird'), false)
 })
 
 // --- profileRemoteOverride ---
@@ -83,6 +97,21 @@ test('profileRemoteOverride returns the per-profile remote with defaulted auth m
 test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
   const config = { profiles: { coder: { mode: 'remote', url: 'https://x', authMode: 'oauth' } } }
   assert.equal(profileRemoteOverride(config, 'coder').authMode, 'oauth')
+})
+
+test('profileRemoteOverride treats a cloud entry as a remote override', () => {
+  // A 'cloud' per-profile entry resolves to the same remote backend a 'remote'
+  // entry would (Q6) — the override must be returned, not dropped.
+  const config = {
+    profiles: {
+      coder: { mode: 'cloud', url: 'https://agent-1.agents.nousresearch.com', authMode: 'oauth' }
+    }
+  }
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://agent-1.agents.nousresearch.com',
+    authMode: 'oauth',
+    token: undefined
+  })
 })
 
 test('profileRemoteOverride tolerates a missing/!object profiles map', () => {

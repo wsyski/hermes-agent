@@ -142,19 +142,30 @@ function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
 }
 
+// True for connection modes that resolve to a REMOTE backend. 'cloud' is a
+// Hermes Cloud connection (cloud-auto-discovery Q3/Q6): it carries a
+// remote-shaped block and reuses the entire remote connect/probe/reconnect
+// path, so every resolution site treats it exactly like 'remote'. The only
+// places that distinguish cloud from remote are the settings UI (which card to
+// show) and config persistence (remembering the provenance). Centralized here
+// so no resolution site forgets the third arm.
+function modeIsRemoteLike(mode) {
+  return mode === 'remote' || mode === 'cloud'
+}
+
 /**
  * Select a profile's explicit remote override from a connection config, or null
  * when it has none (so the caller falls back to env → global remote → local).
  *
  * The config may carry a `profiles` map keyed by name; an entry counts as an
- * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
- * is the raw stored secret; main.cjs decrypts it. Returns
+ * override only with a remote-like `mode` (remote or cloud) and a non-empty
+ * `url`. Pure: `token` is the raw stored secret; main.cjs decrypts it. Returns
  * `{ url, authMode, token } | null`.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
-  if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
+  if (!entry || typeof entry !== 'object' || !modeIsRemoteLike(entry.mode)) {
     return null
   }
 
@@ -273,6 +284,7 @@ module.exports = {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  modeIsRemoteLike,
   normAuthMode,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,

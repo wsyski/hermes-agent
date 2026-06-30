@@ -55,6 +55,15 @@ declare global {
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      // Hermes Cloud: one portal login powers discovery + silent per-agent
+      // sign-in (cloud-auto-discovery Phase 3).
+      cloud: {
+        status: () => Promise<DesktopCloudStatus>
+        login: () => Promise<DesktopCloudStatus & { ok: boolean }>
+        logout: () => Promise<DesktopCloudStatus & { ok: boolean }>
+        discover: () => Promise<DesktopCloudDiscoverResult>
+        agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
+      }
       profile: {
         get: () => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
@@ -354,6 +363,9 @@ export interface DesktopUpdateProgress {
 export interface HermesConnection {
   baseUrl: string
   isFullscreen: boolean
+  // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
+  // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
+  // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
   nativeOverlayWidth: number
@@ -386,7 +398,12 @@ export interface DesktopActiveProfile {
 
 export interface DesktopConnectionConfig {
   envOverride: boolean
-  mode: 'local' | 'remote'
+  // The saved connection mode. 'cloud' is a Hermes Cloud connection: it carries
+  // a remote-shaped block (remoteUrl = the selected agent's dashboardUrl,
+  // remoteAuthMode 'oauth') but is remembered as cloud so settings reopens into
+  // the cloud picker. Resolution treats cloud exactly as remote
+  // (cloud-auto-discovery Q3/Q6).
+  mode: 'local' | 'remote' | 'cloud'
   // The profile this config describes, or null for the global/default
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
@@ -398,7 +415,7 @@ export interface DesktopConnectionConfig {
 }
 
 export interface DesktopConnectionConfigInput {
-  mode: 'local' | 'remote'
+  mode: 'local' | 'remote' | 'cloud'
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
@@ -440,6 +457,37 @@ export interface DesktopOauthLoginResult {
 
 export interface DesktopOauthLogoutResult {
   ok: boolean
+  connected: boolean
+}
+
+// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
+
+export interface DesktopCloudStatus {
+  // The portal base URL the desktop talks to (default or env-overridden).
+  portalBaseUrl: string
+  // Whether the OAuth partition holds a live portal session (AT-or-RT).
+  signedIn: boolean
+}
+
+// A discovered Hermes Cloud agent — the trimmed DTO from NAS GET /api/agents.
+export interface DesktopCloudAgent {
+  id: string
+  name: string
+  status: string
+  // null until the agent has a provisioned dashboard (show "provisioning…").
+  dashboardUrl: string | null
+  // "active" | "degraded" | "down" | "unknown".
+  dashboardGatewayState: string
+}
+
+export interface DesktopCloudDiscoverResult {
+  agents: DesktopCloudAgent[]
+}
+
+export interface DesktopCloudAgentSignInResult {
+  // The agent gateway base URL the silent sign-in targeted.
+  baseUrl: string
+  // Whether the agent's gateway session cookie landed (silent cascade done).
   connected: boolean
 }
 

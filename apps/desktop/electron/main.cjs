@@ -102,6 +102,7 @@ const {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  modeIsRemoteLike,
   normAuthMode,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
@@ -4595,6 +4596,186 @@ async function freshGatewayWsUrl(profile) {
   return connection.wsUrl
 }
 
+// --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
+// Phase 3) ---------------------------------------------------------------
+//
+// The "cloud" connection mode lets a user sign in to the Nous portal ONCE in
+// the OAuth session partition, then (a) discover their hosted agents and (b)
+// connect to any of them with no second interactive sign-in. Both ride the one
+// portal session cookie living in `persist:hermes-remote-oauth`:
+//   - discovery  → GET {portal}/api/agents over the partition-bound net; the
+//     portal session cookie authenticates it (NAS Phase 2.5 accepts the cookie).
+//   - cascade    → opening an agent's own /login in the same partition hits the
+//     portal's silent auto-approve (org member, existing session) and 302s back
+//     with that agent's session cookie — no prompt. Each agent still completes
+//     its own PKCE exchange; SSO removes the human click, not a security check.
+
+// Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
+// convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
+// so a single override flips every Hermes surface to the same portal.
+const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
+
+function resolvePortalBaseUrl() {
+  const raw =
+    process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
+  return String(raw).trim().replace(/\/+$/, '')
+}
+
+// Whether the OAuth partition currently holds a live Nous portal session — the
+// credential that powers both discovery and the silent cascade. Reuses the
+// same AT-or-RT liveness notion as the per-gateway check.
+async function hasLivePortalSession() {
+  return hasLiveOauthSession(resolvePortalBaseUrl())
+}
+
+// Drive a one-time interactive portal sign-in in the OAuth partition. Unlike
+// openOauthLoginWindow (which targets a gateway's /login), this lands on the
+// portal itself so the resulting session cookie is portal-scoped — the cookie
+// that authenticates discovery AND is reused for every silent per-agent
+// cascade. Resolves once the portal session cookie appears.
+function openPortalLoginWindow() {
+  const portalBaseUrl = resolvePortalBaseUrl()
+  return new Promise((resolve, reject) => {
+    if (!app.isReady()) {
+      reject(new Error('Desktop is not ready to start a Hermes Cloud sign-in.'))
+      return
+    }
+    const sess = getOauthSession()
+    if (!sess) {
+      reject(new Error('OAuth session partition is unavailable.'))
+      return
+    }
+
+    let settled = false
+    let win = null
+    let pollTimer = null
+
+    const finish = err => {
+      if (settled) return
+      settled = true
+      if (pollTimer) clearInterval(pollTimer)
+      try {
+        if (win && !win.isDestroyed()) win.destroy()
+      } catch {
+        // window already torn down
+      }
+      if (err) reject(err)
+      else resolve({ portalBaseUrl, ok: true })
+    }
+
+    const checkCookie = async () => {
+      if (settled) return
+      // A live portal session (AT or RT cookie) means sign-in completed.
+      if (await hasLiveOauthSession(portalBaseUrl)) finish(null)
+    }
+
+    try {
+      win = new BrowserWindow({
+        width: 520,
+        height: 720,
+        title: 'Sign in to Hermes Cloud',
+        autoHideMenuBar: true,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          session: sess,
+          webSecurity: true
+        }
+      })
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+      return
+    }
+
+    win.webContents.on('did-navigate', () => void checkCookie())
+    win.webContents.on('did-redirect-navigation', () => void checkCookie())
+    win.webContents.on('did-frame-navigate', () => void checkCookie())
+    pollTimer = setInterval(() => void checkCookie(), 750)
+
+    win.on('closed', () => {
+      if (!settled) finish(new Error('Sign-in window closed before authentication completed.'))
+    })
+
+    // Land on the portal root; any authenticated portal page sets the session
+    // cookie. We only care that the partition cookie jar is populated.
+    win.loadURL(portalBaseUrl).catch(error => {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
+}
+
+// Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
+// the NAS trimmed-summary endpoint over the partition-bound net, so the portal
+// session cookie is attached automatically (no bearer needed — NAS Phase 2.5
+// accepts the cookie). Returns the trimmed agent list; throws a
+// needsCloudLogin-tagged error when no portal session is present.
+async function discoverCloudAgents() {
+  const portalBaseUrl = resolvePortalBaseUrl()
+  if (!(await hasLiveOauthSession(portalBaseUrl))) {
+    const err = new Error(
+      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
+    )
+    err.needsCloudLogin = true
+    throw err
+  }
+
+  let body
+  try {
+    body = await fetchJsonViaOauthSession(`${portalBaseUrl}/api/agents`, {
+      method: 'GET',
+      timeoutMs: 15_000
+    })
+  } catch (error) {
+    // A 401 means the portal session lapsed between the liveness check and the
+    // call — surface it as a re-login, not a generic failure.
+    if (error && error.statusCode === 401) {
+      const err = new Error('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.')
+      err.needsCloudLogin = true
+      err.cause = error
+      throw err
+    }
+    throw error
+  }
+
+  const agents = Array.isArray(body?.agents) ? body.agents : []
+  // Pass the trimmed DTO straight through; the renderer renders name/status/
+  // health and uses dashboardUrl to resolve a connection on selection.
+  return agents
+    .filter(a => a && typeof a === 'object' && typeof a.id === 'string')
+    .map(a => ({
+      id: a.id,
+      name: typeof a.name === 'string' ? a.name : a.id,
+      status: typeof a.status === 'string' ? a.status : 'unknown',
+      dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
+      dashboardGatewayState:
+        typeof a.dashboardGatewayState === 'string' ? a.dashboardGatewayState : 'unknown'
+    }))
+}
+
+// Silent per-agent sign-in: open the selected agent dashboard's /login in the
+// SAME OAuth partition. Because the user already holds a live portal session
+// there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
+// setting that agent's gateway session cookie WITHOUT a second interactive
+// prompt. Reuses openOauthLoginWindow — the window self-closes the instant the
+// agent's session cookie lands (a silent flow finishes in well under a second;
+// if the portal session were absent it would fall through to an interactive
+// login, which the discovery gate already prevents). Returns once the agent's
+// gateway session cookie is present.
+async function cloudAgentSilentSignIn(dashboardUrl) {
+  const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
+  // Pre-req: a live portal session must exist, or this would surface an
+  // interactive prompt rather than a silent cascade. Discovery already gates on
+  // this, but a selection can arrive after the session lapsed.
+  if (!(await hasLivePortalSession())) {
+    const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.')
+    err.needsCloudLogin = true
+    throw err
+  }
+  await openOauthLoginWindow(baseUrl)
+  return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+}
+
 function encryptDesktopSecret(value) {
   return encryptDesktopSecretStrict(value, safeStorage)
 }
@@ -4638,7 +4819,7 @@ function sanitizeConnectionProfiles(raw) {
       continue
     }
 
-    const cleaned = { mode: entry.mode === 'remote' ? 'remote' : 'local' }
+    const cleaned = { mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local' }
     const url = String(entry.url || '').trim()
     if (url) {
       cleaned.url = url
@@ -4681,7 +4862,7 @@ function readDesktopConnectionConfig() {
       // backward compatibility with configs written before OAuth support.
       remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
       config = {
-        mode: parsed.mode === 'remote' ? 'remote' : 'local',
+        mode: modeIsRemoteLike(parsed.mode) ? parsed.mode : 'local',
         remote,
         // Per-profile remote overrides: each profile may point at its own
         // backend (local spawn or its own remote URL). Preserved verbatim so
@@ -4752,7 +4933,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
-  const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
+  // The env override forces a plain remote connection. Otherwise reflect the
+  // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI
+  // reopens into the cloud picker; any non-remote-like value collapses to local.
+  const savedMode = key ? scoped?.mode : config.mode
+  const mode = envOverride ? 'remote' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -4795,7 +4980,11 @@ function buildRemoteBlock(remoteUrl, authMode, token) {
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
-  const mode = input.mode === 'remote' ? 'remote' : 'local'
+  // 'cloud' and 'remote' both persist a remote-shaped block; 'cloud' is
+  // remembered as its own provenance (Q6) and resolves to remote downstream.
+  // Anything else collapses to local.
+  const mode = modeIsRemoteLike(input.mode) ? input.mode : 'local'
+  const remoteLike = modeIsRemoteLike(mode)
 
   // The block being edited: a per-profile entry or the global remote block.
   const existingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
@@ -4810,21 +4999,25 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
     : existingBlock.token
 
   if (key) {
-    // Per-profile scope: a remote entry pins this profile to its own backend; a
-    // local entry clears the override so the profile inherits the default.
+    // Per-profile scope: a remote/cloud entry pins this profile to its own
+    // backend; a local entry clears the override so the profile inherits the
+    // default. The mode tag (remote vs cloud) is preserved on the entry.
     const profiles = { ...(existing.profiles || {}) }
-    if (mode === 'remote') {
-      profiles[key] = { mode: 'remote', ...buildRemoteBlock(remoteUrl, authMode, nextToken) }
+    if (remoteLike) {
+      profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken) }
     } else {
       delete profiles[key]
     }
-    return { mode: existing.mode === 'remote' ? 'remote' : 'local', remote: existing.remote || {}, profiles }
+    return {
+      mode: modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
+      remote: existing.remote || {},
+      profiles
+    }
   }
 
-  const nextRemote =
-    mode === 'remote'
-      ? buildRemoteBlock(remoteUrl, authMode, nextToken)
-      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+  const nextRemote = remoteLike
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken)
+    : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -4928,8 +5121,8 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
   }
 
-  // 3. Global remote.
-  if (config.mode !== 'remote') {
+  // 3. Global remote (or cloud — cloud resolves to a remote backend, Q6).
+  if (!modeIsRemoteLike(config.mode)) {
     return null
   }
   const authMode = normAuthMode(config.remote?.authMode)
@@ -4951,13 +5144,14 @@ function configuredRemoteProfileNames() {
 }
 
 // True when the app is in app-global remote mode (Settings → "All profiles" →
-// Remote, or the env override): a SINGLE remote backend serves every profile via
-// ?profile=. Distinct from per-profile overrides — here there's one host for all.
+// Remote/Cloud, or the env override): a SINGLE remote backend serves every
+// profile via ?profile=. Cloud counts — it resolves to a remote backend (Q6).
+// Distinct from per-profile overrides — here there's one host for all.
 function globalRemoteActive() {
   if (process.env.HERMES_DESKTOP_REMOTE_URL) {
     return true
   }
-  return readDesktopConnectionConfig().mode === 'remote'
+  return modeIsRemoteLike(readDesktopConnectionConfig().mode)
 }
 
 // GET a profile's resolved backend (remote pool or local primary), parsed JSON.
@@ -5045,7 +5239,9 @@ async function testDesktopConnectionConfig(input = {}) {
   // already normalized the URL and resolved token inheritance for the scope.
   const block = key ? config.profiles?.[key] || null : config.remote
   const wantRemote =
-    block?.mode === 'remote' || (!key && config.mode === 'remote') || (input.mode === 'remote' && block)
+    modeIsRemoteLike(block?.mode) ||
+    (!key && modeIsRemoteLike(config.mode)) ||
+    (modeIsRemoteLike(input.mode) && block)
   // ``/api/status`` is public on every gateway (no creds needed), so a
   // reachability test works for local, token, and oauth modes alike — we only
   // need a base URL. For a remote config we normalize the URL from the input;
@@ -6272,6 +6468,32 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   // (AT-or-RT) so a logout that left any session cookie behind is reflected
   // as still-connected rather than silently signed-out.
   return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
+})
+
+// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
+// One portal login in the OAuth partition powers both discovery and the silent
+// per-agent cascade. See the discovery/cascade helpers above.
+ipcMain.handle('hermes:cloud:status', async () => ({
+  portalBaseUrl: resolvePortalBaseUrl(),
+  signedIn: await hasLivePortalSession()
+}))
+ipcMain.handle('hermes:cloud:login', async () => {
+  await openPortalLoginWindow()
+  return { ok: true, signedIn: await hasLivePortalSession() }
+})
+ipcMain.handle('hermes:cloud:logout', async () => {
+  await clearOauthSession(resolvePortalBaseUrl())
+  return { ok: true, signedIn: await hasLivePortalSession() }
+})
+ipcMain.handle('hermes:cloud:discover', async () => {
+  const agents = await discoverCloudAgents()
+  return { agents }
+})
+ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
+  // Silent per-agent sign-in via the shared portal session. Returns the agent's
+  // gateway baseUrl + whether its session cookie landed; the renderer then
+  // saves a cloud-mode connection pointed at this dashboardUrl.
+  return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)

@@ -13,7 +13,7 @@ import { $profiles, refreshActiveProfile } from '@/store/profile'
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './primitives'
 
-type Mode = 'local' | 'remote'
+type Mode = 'local' | 'remote' | 'cloud'
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 

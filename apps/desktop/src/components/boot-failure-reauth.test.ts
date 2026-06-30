@@ -31,6 +31,16 @@ describe('isRemoteReauthFailure', () => {
     expect(isRemoteReauthFailure(config({ mode: 'local' }))).toBe(false)
   })
 
+  it('true for a cloud connection with a lapsed session (cloud resolves to remote oauth)', () => {
+    // A 'cloud' connection is a remote oauth backend under the hood (Q6), so a
+    // lapsed cloud session is the same reauth failure as a lapsed remote one.
+    expect(isRemoteReauthFailure(config({ mode: 'cloud' }))).toBe(true)
+  })
+
+  it('false for a connected cloud session', () => {
+    expect(isRemoteReauthFailure(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(false)
+  })
+
   it('false for a token (non-gated) remote gateway', () => {
     expect(isRemoteReauthFailure(config({ remoteAuthMode: 'token' }))).toBe(false)
   })
