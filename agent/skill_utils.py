@@ -349,6 +349,31 @@ def _detect_environment(env: str) -> bool:
     return result
 
 
+def skill_matches_environment_list(environments: Any) -> bool:
+    """Return True when *environments* is relevant to the current runtime.
+
+    The list-shaped sibling of :func:`skill_matches_environment`, mirroring
+    :func:`skill_matches_platform_list`. Callers that hold serialized metadata
+    rather than frontmatter — the prompt-index snapshot, for one — need this
+    form; without it an ``environments`` tag survives a cold scan and is lost
+    on every cached rebuild.
+    """
+    if not environments:
+        return True
+    if not isinstance(environments, list):
+        environments = [environments]
+    for env in environments:
+        normalized = str(env).lower().strip()
+        if not normalized:
+            continue
+        if normalized not in _KNOWN_ENVIRONMENTS:
+            # Tag we don't understand — don't hide the skill over it.
+            return True
+        if _detect_environment(normalized):
+            return True
+    return False
+
+
 def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     """Return True when the skill is relevant to the current runtime environment.
 
@@ -371,21 +396,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     A skill matches when ANY of its declared environments is currently active
     (OR semantics, mirroring ``platforms``). Unknown env tags fail open.
     """
-    environments = frontmatter.get("environments")
-    if not environments:
-        return True
-    if not isinstance(environments, list):
-        environments = [environments]
-    for env in environments:
-        normalized = str(env).lower().strip()
-        if not normalized:
-            continue
-        if normalized not in _KNOWN_ENVIRONMENTS:
-            # Tag we don't understand — don't hide the skill over it.
-            return True
-        if _detect_environment(normalized):
-            return True
-    return False
+    return skill_matches_environment_list(frontmatter.get("environments"))
 
 
 # ── Disabled skills ───────────────────────────────────────────────────────

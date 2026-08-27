@@ -38,6 +38,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     read_active_org_id,
     skill_matches_environment,
+    skill_matches_environment_list,
     skill_matches_platform,
     skill_matches_platform_list,
 )
@@ -1633,12 +1634,21 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    # Serialized alongside platforms for the same reason: the fast path rebuilds
+    # the index from this entry alone, so a filter whose input is not here cannot
+    # run at all. Omitting it let environment-gated skills reappear in the index
+    # on every cached rebuild, while the cold scan filtered them correctly.
+    environments = frontmatter.get("environments") or []
+    if isinstance(environments, str):
+        environments = [environments]
+
     entry = {
         "skill_name": skill_name,
         "category": category,
         "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
+        "environments": [str(e).strip() for e in environments if str(e).strip()],
         "conditions": extract_skill_conditions(frontmatter),
     }
     if org_id:
@@ -1848,6 +1858,8 @@ def _build_skills_system_prompt_inner(
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
             if not skill_matches_platform_list(platforms):
+                continue
+            if not skill_matches_environment_list(entry.get("environments")):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
