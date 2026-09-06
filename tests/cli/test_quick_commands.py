@@ -1,6 +1,7 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import os
 import subprocess
+import asyncio
 from unittest.mock import MagicMock, patch
 from rich.text import Text
 import pytest
@@ -89,6 +90,46 @@ class TestGatewayQuickCommands:
         event.source.chat_type = "dm"
         event.source.chat_id = "123"
         return event
+
+    def test_plugin_send_directive_falls_through_to_agent(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        event = self._make_event("wiki-ingest", "notes.md")
+        handler = MagicMock(return_value={
+            "type": "send", "message": "load the wrapper", "display": "/wiki-ingest"
+        })
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: handler)
+
+        handled, result, command = asyncio.run(
+            runner._hm_dispatch_quick_and_plugin_commands(event, event.source, "wiki-ingest")
+        )
+
+        assert handled is False
+        assert result is None
+        assert command == ""
+        assert event.text == "load the wrapper"
+
+    def test_malformed_plugin_send_directive_does_not_reach_agent(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        event = self._make_event("wiki-ingest", "notes.md")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_command_handler",
+            lambda _name: lambda _arg: {"type": "send", "message": {"unsafe": "object"}},
+        )
+
+        handled, result, command = asyncio.run(
+            runner._hm_dispatch_quick_and_plugin_commands(event, event.source, "wiki-ingest")
+        )
+
+        assert handled is True
+        assert result == "Plugin command returned an invalid send directive."
+        assert command == "wiki-ingest"
+        assert event.text == "/wiki-ingest notes.md"
 
     @pytest.mark.asyncio
     async def test_exec_command_returns_output(self):

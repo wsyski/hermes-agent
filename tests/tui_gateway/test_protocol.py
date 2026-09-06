@@ -1256,6 +1256,66 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
+def test_command_dispatch_preserves_plugin_send_directive(server, monkeypatch):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    directive = {"type": "send", "message": "run the wrapper", "display": "/skill-sync"}
+    monkeypatch.setattr(server, "_plugin_command_handler", lambda _name: lambda _arg: directive)
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": "skill-sync", "arg": "", "session_id": sid},
+    })
+
+    assert resp["result"] == directive
+
+
+def test_slash_exec_preserves_plugin_send_directive(server, monkeypatch):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    directive = {"type": "send", "message": "run the wrapper", "display": "/skill-sync"}
+    monkeypatch.setattr(server, "_plugin_command_handler", lambda _name: lambda _arg: directive)
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "slash.exec",
+        "params": {"command": "skill-sync", "session_id": sid},
+    })
+
+    assert resp["result"] == directive
+
+
+def test_command_dispatch_keeps_other_plugin_dicts_as_output(server, monkeypatch):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    result = {"type": "alias", "target": "clear"}
+    monkeypatch.setattr(server, "_plugin_command_handler", lambda _name: lambda _arg: result)
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": "demo", "arg": "", "session_id": sid},
+    })
+
+    assert resp["result"] == {"type": "plugin", "output": str(result)}
+
+
+def test_command_dispatch_keeps_malformed_plugin_send_as_output(server, monkeypatch):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    result = {"type": "send", "message": {"not": "text"}}
+    monkeypatch.setattr(server, "_plugin_command_handler", lambda _name: lambda _arg: result)
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": "demo", "arg": "", "session_id": sid},
+    })
+
+    assert resp["result"] == {"type": "plugin", "output": str(result)}
+
+
 def test_skills_manage_search_uses_tools_hub_sources(server):
     result = type("Result", (), {
         "description": "Build better terminal demos",

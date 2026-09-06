@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures
 import dataclasses
+import inspect
 import json
 import os
 import re
@@ -982,8 +983,14 @@ class GatewayInboundMixin:
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
+                    if inspect.isawaitable(result):
                         result = await result
+                    if isinstance(result, dict) and result.get("type") == "send":
+                        message = result.get("message")
+                        if not isinstance(message, str) or not message.strip():
+                            return True, "Plugin command returned an invalid send directive.", command
+                        event.text = message
+                        return False, None, ""
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

@@ -485,8 +485,18 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str):
+    return _tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg))
+
+
+def _plugin_send_directive(result):
+    if not (isinstance(result, dict) and result.get("type") == "send"
+            and isinstance(result.get("message"), str) and result["message"].strip()):
+        return None
+    directive = {"type": "send", "message": result["message"]}
+    if isinstance(result.get("display"), str):
+        directive["display"] = result["display"]
+    return directive
 
 
 def _is_profile_skill_command(session: dict, base: str) -> bool:
@@ -508,7 +518,10 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            result = _run_plugin_command(handler, arg)
+            if directive := _plugin_send_directive(result):
+                return _ok(rid, directive)
+            return _ok(rid, {"type": "plugin", "output": str(result or "")})
     return None
 
 
@@ -853,7 +866,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            result = _run_plugin_command(plugin_handler, arg)
+            if directive := _plugin_send_directive(result):
+                return _ok(rid, directive)
+            return _ok(rid, {"output": str(result or "") or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
